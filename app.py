@@ -10,6 +10,16 @@ from collections import deque
 import cv2 as cv
 import numpy as np
 import mediapipe as mp
+import time
+
+try:
+    import pyautogui
+    PY_AUTOGUI_AVAILABLE = True
+except ImportError:
+    pyautogui = None
+    PY_AUTOGUI_AVAILABLE = False
+
+import subprocess
 
 from utils import CvFpsCalc
 from model import KeyPointClassifier
@@ -92,10 +102,14 @@ def main():
     history_length = 16
     point_history = deque(maxlen=history_length)
 
-    # フィンガージェスチャー履歴 ################################################
     finger_gesture_history = deque(maxlen=history_length)
 
-    #  ########################################################################
+    last_action_time = 0
+    action_cooldown = 1.5
+    last_hand_sign_id = -1
+    screen_width, screen_height = 1920, 1080
+    if PY_AUTOGUI_AVAILABLE:
+        screen_width, screen_height = pyautogui.size()
     mode = 0
 
     while True:
@@ -153,12 +167,44 @@ def main():
                     finger_gesture_id = point_history_classifier(
                         pre_processed_point_history_list)
 
-                # 直近検出の中で最多のジェスチャーIDを算出
                 finger_gesture_history.append(finger_gesture_id)
-                most_common_fg_id = Counter(
-                    finger_gesture_history).most_common()
+                most_common_fg_id = Counter(finger_gesture_history).most_common()
 
-                # 描画
+                if hand_sign_id == 2 and PY_AUTOGUI_AVAILABLE:
+                    if len(landmark_list) > 8:
+                        index_finger_tip = landmark_list[8]
+                        hand_x = index_finger_tip[0]
+                        hand_y = index_finger_tip[1]
+                        image_width = debug_image.shape[1]
+                        image_height = debug_image.shape[0]
+                        screen_x = int((hand_x / image_width) * screen_width)
+                        screen_y = int((hand_y / image_height) * screen_height)
+                        screen_x = max(0, min(screen_width - 1, screen_x))
+                        screen_y = max(0, min(screen_height - 1, screen_y))
+                        pyautogui.moveTo(screen_x, screen_y, duration=0.1)
+                
+                if hand_sign_id != last_hand_sign_id:
+                    current_time = time.time()
+                    if current_time - last_action_time >= action_cooldown:
+                        try:
+                            if hand_sign_id == 0:
+                                result = subprocess.run(['osascript', '-e', 'tell application "System Events" to key code 126 using {control down}'], 
+                                                       capture_output=True, text=True, check=False)
+                                if result.returncode != 0:
+                                    print("⚠️  Permission needed: Go to System Settings → Privacy → Accessibility and enable Terminal")
+                                else:
+                                    print("✓ Open Palm: Mission Control")
+                            elif hand_sign_id == 1:
+                                result = subprocess.run(['osascript', '-e', 'tell application "System Events" to keystroke space using command down'], 
+                                                       capture_output=True, text=True, check=False)
+                                if result.returncode != 0:
+                                    print("⚠️  Permission needed: Go to System Settings → Privacy → Accessibility and enable Terminal")
+                                else:
+                                    print("✓ Closed Fist: Spotlight Search")
+                            last_action_time = current_time
+                        except Exception as e:
+                            print(f"Action failed: {e}")
+                    last_hand_sign_id = hand_sign_id
                 debug_image = draw_bounding_rect(use_brect, debug_image, brect)
                 debug_image = draw_landmarks(debug_image, landmark_list)
                 debug_image = draw_info_text(
@@ -170,6 +216,7 @@ def main():
                 )
         else:
             point_history.append([0, 0])
+            last_hand_sign_id = -1
 
         debug_image = draw_point_history(debug_image, point_history)
         debug_image = draw_info(debug_image, fps, mode, number)
